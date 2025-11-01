@@ -124,6 +124,45 @@ def requires_auth(f):
 # ==================== AI FUNCTIONS ====================
 CLASS_NAMES = ['shrimp']
 
+# Hằng số để tính toán kích thước thực tế của tôm
+# Giả định: Camera ở độ cao cố định, FOV cố định
+# Bạn có thể điều chỉnh các hằng số này dựa trên setup thực tế
+PIXEL_TO_CM_RATIO = 0.02  # 1 pixel = 0.02 cm (điều chỉnh theo setup camera của bạn)
+# Công thức tính khối lượng tôm: W = a * L^b (W: gram, L: cm)
+# Dựa trên nghiên cứu tôm thẻ chân trắng (Litopenaeus vannamei)
+LENGTH_WEIGHT_A = 0.0065  # Hệ số a
+LENGTH_WEIGHT_B = 3.1     # Hệ số b (thường từ 2.8 - 3.2)
+
+def calculate_shrimp_length(bbox_width, bbox_height):
+    """
+    Tính chiều dài tôm từ bounding box
+    Args:
+        bbox_width: chiều rộng bounding box (pixels)
+        bbox_height: chiều cao bounding box (pixels)
+    Returns:
+        length: chiều dài ước tính (cm)
+    """
+    # Sử dụng cạnh lớn nhất của bounding box làm chiều dài
+    max_dimension = max(bbox_width, bbox_height)
+    # Chuyển đổi từ pixel sang cm
+    length_cm = max_dimension * PIXEL_TO_CM_RATIO
+    return round(length_cm, 2)
+
+def calculate_shrimp_weight(length_cm):
+    """
+    Ước tính khối lượng tôm từ chiều dài
+    Sử dụng công thức: W = a * L^b
+    Args:
+        length_cm: chiều dài tôm (cm)
+    Returns:
+        weight: khối lượng ước tính (gram)
+    """
+    if length_cm <= 0:
+        return 0.0
+
+    weight_gram = LENGTH_WEIGHT_A * (length_cm ** LENGTH_WEIGHT_B)
+    return round(weight_gram, 2)
+
 def preprocess_image(image_np):
     """Tiền xử lý ảnh cho TFLite model"""
     img = cv2.resize(image_np, (INPUT_WIDTH, INPUT_HEIGHT))
@@ -202,6 +241,10 @@ def parse_yolo_output(outputs, original_shape, conf_threshold=0.25, iou_threshol
                         x = x1 + w/2
                         y = y1 + h/2
 
+                        # Tính chiều dài và khối lượng tôm
+                        length_cm = calculate_shrimp_length(w, h)
+                        weight_gram = calculate_shrimp_weight(length_cm)
+
                         detections.append({
                             "className": CLASS_NAMES[class_ids[i]] if class_ids[i] < len(CLASS_NAMES) else f"class_{class_ids[i]}",
                             "confidence": scores[i],
@@ -210,7 +253,9 @@ def parse_yolo_output(outputs, original_shape, conf_threshold=0.25, iou_threshol
                                 "y": float(y),
                                 "width": float(w),
                                 "height": float(h)
-                            }
+                            },
+                            "length": length_cm,    # Chiều dài (cm)
+                            "weight": weight_gram   # Khối lượng (gram)
                         })
 
     return detections
@@ -234,14 +279,27 @@ def draw_detections(image_np, detections):
         color = (0, 255, 0)
         cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
 
-        label = f"{det['className']} {det['confidence']:.2f}"
-        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+        # Label với confidence, length và weight
+        conf = det['confidence']
+        length = det.get('length', 0)
+        weight = det.get('weight', 0)
+        label = f"{det['className']} {conf:.2f}"
+        label2 = f"L:{length}cm W:{weight}g"
 
+        # Vẽ background cho label chính
+        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
         cv2.rectangle(img, (x1, y1 - label_size[1] - 10),
                      (x1 + label_size[0], y1), color, -1)
-
         cv2.putText(img, label, (x1, y1 - 5),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
+        # Vẽ background cho label length/weight
+        label2_size, _ = cv2.getTextSize(label2, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        cv2.rectangle(img, (x1, y2),
+                     (x1 + label2_size[0] + 4, y2 + label2_size[1] + 8),
+                     color, -1)
+        cv2.putText(img, label2, (x1 + 2, y2 + label2_size[1] + 4),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
     return img
 
@@ -491,7 +549,7 @@ if __name__ == '__main__':
     print("="*50)
     print(f"Camera: {'✅ Available' if camera else '❌ Not found'}")
     print(f"Model: {'✅ Loaded' if interpreter else '❌ Not loaded'}")
-    print(f"MongoDB: {'✅ Connected' if collection else '❌ Not connected'}")
+    print(f"MongoDB: {'✅ Connected' if collection is not None else '❌ Not connected'}")
     print(f"Cloudinary: ✅ Configured")
     print("\nEndpoints:")
     print("  - Camera Stream: /blynk_feed")
